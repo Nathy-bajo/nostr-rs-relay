@@ -3,6 +3,7 @@ use crate::close::Close;
 use crate::close::CloseCmd;
 use crate::config::{Settings, VerifiedUsersMode};
 use crate::conn;
+use crate::conn::ClientConn;
 use crate::db;
 use crate::db::SubmittedEvent;
 use crate::error::{Error, Result};
@@ -11,6 +12,7 @@ use crate::event::EventCmd;
 use crate::event::EventWrapper;
 use crate::info::RelayInfo;
 use crate::nip05;
+use crate::nostr_contract;
 use crate::notice::Notice;
 use crate::payment;
 use crate::payment::InvoiceInfo;
@@ -39,6 +41,7 @@ use qrcode::render::svg;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sp_core::Pair;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::fs::File;
@@ -51,6 +54,10 @@ use std::sync::mpsc::Receiver as MpscReceiver;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+use subxt::OnlineClient;
+use subxt::PolkadotConfig;
+use tiny_keccak::Hasher;
+use tiny_keccak::Sha3;
 use tokio::runtime::Builder;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::sync::mpsc;
@@ -78,6 +85,31 @@ async fn handle_web_request(
     registry: Registry,
     metrics: NostrMetrics,
 ) -> Result<Response<Body>, Infallible> {
+
+    let pubkey = get_pubkey(&request);
+
+    let pubkey = pubkey.unwrap();
+
+    println!("Client Pubkey!!!: {:?}", pubkey);
+
+
+    // Check user subscription status
+    let is_subscribed = match check_user_subscription_status(pubkey, &settings).await {
+        Ok(subscribed) => subscribed,
+        Err(_) => {
+            let mut res =
+                Response::new(Body::from("Internal Server Error: Unable to check subscription status."));
+            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            return Ok(res);
+        }
+    };
+
+    if !is_subscribed {
+        // User is not subscribed, return FORBIDDEN response
+        let mut res = Response::new(Body::from("Forbidden: User is not subscribed."));
+        *res.status_mut() = StatusCode::FORBIDDEN;
+        return Ok(res);
+    }
     match (
         request.uri().path(),
         request.headers().contains_key(header::UPGRADE),
@@ -351,7 +383,7 @@ async fn handle_web_request(
             }
 
             // Get query pubkey from query string
-            let pubkey = get_pubkey(request);
+            let pubkey = get_pubkey(&request);
 
             // Redirect back to join page if no pub key is found in query string
             if pubkey.is_none() {
@@ -372,6 +404,8 @@ async fn handle_web_request(
                     .body(Body::from("Looks like your key is invalid"))
                     .unwrap());
             }
+
+            println!("Nostrr key: {:?}", key);
 
             // Checks if user is already admitted
             let payment_message;
@@ -546,7 +580,7 @@ async fn handle_web_request(
             }
 
             // Gets the pubkey from query string
-            let pubkey = get_pubkey(request);
+            let pubkey = get_pubkey(&request);
 
             // Redirect back to join page if no pub key is found in query string
             if pubkey.is_none() {
@@ -627,8 +661,29 @@ async fn handle_web_request(
     }
 }
 
+fn hash_user_post(user_post: &str) -> Vec<u8> {
+    let mut hasher = Sha3::v256();
+    let mut output = [0u8; 32]; 
+
+    hasher.update(user_post.as_bytes());
+    hasher.finalize(&mut output);
+
+    output.to_vec()
+}
+
+// Sign data using the relayer's private key
+fn sign_data(data: &[u8], settings: &Settings) -> Result<Vec<u8>, &'static str> {
+    let private_key_bytes =
+        hex::decode(&settings.contract_settings.private_key).map_err(|_| "Invalid hex encoding")?;
+    let pair = sp_core::sr25519::Pair::from_seed_slice(&private_key_bytes)
+        .map_err(|_| "Invalid private key")?;
+
+    let signature = pair.sign(data);
+    Ok(signature.0.to_vec())
+}
+
 // Get pubkey from request query string
-fn get_pubkey(request: Request<Body>) -> Option<String> {
+fn get_pubkey(request: &Request<Body>) -> Option<String> {
     let query = request.uri().query().unwrap_or("").to_string();
 
     // Gets the pubkey value from query string
@@ -756,6 +811,110 @@ fn file_bytes(path: &str) -> Result<Vec<u8>> {
     // Read file into vector.
     reader.read_to_end(&mut buffer)?;
     Ok(buffer)
+}
+
+async fn listen_for_report_events(
+    relayer_id: Arc<Settings>,
+    user_post: String,
+    signature: Vec<u8>,
+) {
+    let contract_address = relayer_id.contract_settings.contract_address.clone();
+
+    let public_key = relayer_id.contract_settings.public_key.clone();
+
+    let client = OnlineClient::<PolkadotConfig>::new().await.unwrap();
+
+    let events = client.events().at_latest().await.unwrap();
+
+    for event in events.iter() {
+        // println!("{}", event);
+    }
+
+    //    for event in events.iter() {
+    //     if let Ok(report_event) = event {
+    //         if let Some(relayer_id_event) = report_event.relayer_id() {
+    //             if let Some(signature_event) = report_event.signature() {
+    //                 if let Some(user_post_event) = report_event.user_post() {
+    //                     if relayer_id_event == *public_key && signature_event == signature {
+    //                         send_response_to_contract(user_post_event);
+    //                     }
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
+}
+
+async fn send_user_post_to_contract(user_post: String) {
+    println!("Sending user_post to the contract: {}", user_post);
+}
+
+#[derive(Debug)]
+pub enum MyError {
+    NotSubscribed,
+}
+
+pub async fn check_user_subscription_status(
+    client_key: String,
+    settings: &Settings,
+) -> Result<bool, MyError> {
+
+    let url = "wss://shibuya-rpc.dwellir.com";
+    let conn = aleph_client::Connection::new(url).await;
+
+    // Convert the contract address to an AccountId
+    let addr: sp_core::sr25519::Public =
+        sp_core::crypto::Ss58Codec::from_ss58check(&settings.contract_settings.contract_address)
+            .unwrap();
+    let contract_account_id = ink_wrapper_types::util::ToAccountId::to_account_id(&addr);
+
+    // Call the get_subscribers function on the contract
+    let instance: crate::nostr_contract::Instance = contract_account_id.into();
+
+    // Checks key is valid
+    let pubkey = client_key;
+    println!("Clientes pubkey: {:?}", pubkey);
+
+    let pubkey_bytes = pubkey.as_bytes();
+
+    let metadata_result =
+        ink_wrapper_types::Connection::read(&conn, instance.get_subscription_plans()).await;
+    match metadata_result {
+        Ok(plans) => {
+            for plan in plans.unwrap_or_default() {
+                let relayer_id = plan.relayer_id.clone();
+                let relayer_address = relayer_id;
+
+                // Extracting nostr_pubkey directly from SubscriptionPlanInfo
+                let nostr_pubkeys: Vec<Vec<u8>> = plan
+                    .subscribers
+                    .iter()
+                    .map(|entry| entry.nostr_pubkey.clone())
+                    .collect();
+
+                println!("Relayer ID: {:?}", relayer_address);
+                println!("Price per month: {}", plan.price_per_month);
+                println!("Price per week: {}", plan.price_per_week);
+                println!("Price per year: {}", plan.price_per_year);
+                println!("Nostr Pubkeys: {:?}", nostr_pubkeys);
+                println!("Plan ID: {}\n", plan.plan_id);
+
+                if nostr_pubkeys.iter().any(|npk| npk == &pubkey_bytes) {
+                    // User is subscribed
+
+                    return Ok(true);
+                }
+            }
+            // User is not subscribed
+            debug!("User is not subscribed");
+            Err(MyError::NotSubscribed)
+        }
+        Err(err) => {
+            // Handle the error
+            println!("Error: {:?}", err);
+            Err(MyError::NotSubscribed)
+        }
+    }
 }
 
 /// Start running a Nostr relay server.
@@ -938,6 +1097,8 @@ pub fn start_server(settings: &Settings, shutdown_rx: MpscReceiver<()>) -> Resul
         // A `Service` is needed for every connection, so this
         // creates one from our `handle_request` function.
         let make_svc = make_service_fn(|conn: &AddrStream| {
+            let remote_addr = conn.remote_addr();
+            let client_ip_addr = format!("{}", remote_addr.ip());
             let repo = repo.clone();
             let remote_addr = conn.remote_addr();
             let bcast = bcast_tx.clone();
@@ -951,6 +1112,40 @@ pub fn start_server(settings: &Settings, shutdown_rx: MpscReceiver<()>) -> Resul
             async move {
                 // service_fn converts our function into a `Service`
                 Ok::<_, Infallible>(service_fn(move |request: Request<Body>| {
+
+                    let nostr_pubkey = get_pubkey(&request);
+                    // Print the Nostr pubkey to the console
+                    if let Some(pubkey) = &nostr_pubkey {
+                        println!("Client Nostr Pubkey: {}", pubkey);
+                    } else {
+                        println!("Nostr Pubkey was not found in the request");
+                    }
+
+                    let nostr_pubkey = get_pubkey(&request);
+                    match nostr_pubkey {
+                        Some(pubkey) => info!("Received Nostr pubkey: {}", pubkey),
+                        None => warn!("Nostr Pubkeyyyyy was not found in the request"),
+                    }
+
+                    let client_conn = ClientConn::new(client_ip_addr.clone());
+
+                    match client_conn.auth_pubkey() {
+                        Some(auth_pubkey) => {
+                            // Print out auth_pubkey
+                            println!("Clientsss authenticated with pubkey: {}", auth_pubkey);
+                        }
+                        None => {
+                            // Auth_pubkey not available
+                            println!("Clientsss not authenticated");
+                        }
+                    }
+
+                    // Debugging Authentication Logic
+                    for (name, value) in request.headers().iter() {
+                        println!("Headersss - {}: {:?}", name, value);
+                    }
+
+                    
                     handle_web_request(
                         request,
                         repo.clone(),
@@ -967,6 +1162,7 @@ pub fn start_server(settings: &Settings, shutdown_rx: MpscReceiver<()>) -> Resul
                 }))
             }
         });
+        
         let server = Server::bind(&socket_addr)
             .serve(make_svc)
             .with_graceful_shutdown(ctrl_c_or_signal(webserver_shutdown_listen));

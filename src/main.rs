@@ -2,7 +2,7 @@
 use clap::Parser;
 use console_subscriber::ConsoleLayer;
 use nostr_rs_relay::cli::CLIArgs;
-use nostr_rs_relay::config;
+use nostr_rs_relay::config::{self, ContractSettings};
 use nostr_rs_relay::server::start_server;
 use std::fs;
 use std::path::Path;
@@ -56,6 +56,13 @@ fn main() {
         eprintln!("Error reading config file ({:?})", e);
         process::exit(1);
     });
+
+    let contract_settings = ContractSettings::new(
+        String::from("5EftbYGhNxuLvQQbkF6XV3GKs98rJKNuSf5mB7pkpYkGWyZE"),
+        String::from("9v2W7nfSOfFUrYWyviBBDPgAthk3kwWPwLiWRmgsP0kAgAAAAQAAAAgAAAAn3QJNuKbmL4gzEO+28TsvS6x9B9+cQ7/N0QPe+qCNiDt6j+FRD0hMpYspuXBbTB/KIlaTBelVbkcIy2bb9CNHFsp/u9OOlNr/7P4S57vErCHu8tvzAXEqSkXjRPJKY0EfU6FBnsdEUiKmZukd7/2e25gSAcjzdHuAq+05FajfiqrN1PNeYiIAyMIMYagd0XIVsD62/DzTT5hLNeXF"),
+        String::from("5HBe3YDxvGvk8uaeahntWdYPhhCB5J62tQV4wLCRUcpK1971"),
+    );
+    settings.contract_settings = contract_settings;
 
     // setup tracing
     if settings.diagnostics.tracing {

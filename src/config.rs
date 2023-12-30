@@ -190,6 +190,34 @@ pub struct Settings {
     pub retention: Retention,
     pub options: Options,
     pub logging: Logging,
+    pub contract_settings: ContractSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContractSettings {
+    pub contract_address: String,
+    pub private_key: String,
+    pub public_key: String,    
+}
+
+impl ContractSettings {
+    pub fn new(contract_address: String, private_key: String, public_key: String) -> Self {
+        Self {
+            contract_address,
+            private_key,
+            public_key,
+        }
+    }
+}
+
+impl Default for ContractSettings {
+    fn default() -> Self {
+        Self {
+            contract_address: String::new(),
+            private_key: String::new(),
+            public_key: String::new(),
+        }
+    }
 }
 
 impl Settings {
@@ -210,6 +238,99 @@ impl Settings {
                 }
             }
             ok => ok,
+        }
+    }
+
+    pub fn contract_settings(&self) -> &ContractSettings {
+        &self.contract_settings
+    }
+    
+    pub fn with_contract_settings(contract_settings: ContractSettings) -> Self {
+        Self {
+            info: Info {
+                relay_url: None,
+                name: Some("Unnamed nostr-rs-relay".to_owned()),
+                description: None,
+                pubkey: None,
+                contact: None,
+                favicon: None,
+                relay_icon: None,
+            },
+            diagnostics: Diagnostics { tracing: false },
+            database: Database {
+                data_directory: ".".to_owned(),
+                engine: "sqlite".to_owned(),
+                in_memory: false,
+                min_conn: 4,
+                max_conn: 8,
+                connection: "".to_owned(),
+                connection_write: None,
+            },
+            grpc: Grpc {
+                event_admission_server: None,
+                restricts_write: false,
+            },
+            network: Network {
+                port: 8080,
+                ping_interval_seconds: 300,
+                address: "0.0.0.0".to_owned(),
+                remote_ip_header: None,
+            },
+            limits: Limits {
+                messages_per_sec: None,
+                subscriptions_per_min: None,
+                db_conns_per_client: None,
+                max_blocking_threads: 16,
+                max_event_bytes: Some(2 << 17),      // 128K
+                max_ws_message_bytes: Some(2 << 17), // 128K
+                max_ws_frame_bytes: Some(2 << 17),   // 128K
+                broadcast_buffer: 16384,
+                event_persist_buffer: 4096,
+                event_kind_blacklist: None,
+                event_kind_allowlist: None,
+                limit_scrapers: false,
+            },
+            authorization: Authorization {
+                pubkey_whitelist: None,
+                nip42_auth: false,
+                nip42_dms: false,
+            },
+            pay_to_relay: PayToRelay {
+                enabled: false,
+                admission_cost: 4200,
+                cost_per_event: 0,
+                terms_message: "".to_string(),
+                node_url: "".to_string(),
+                api_secret: "".to_string(),
+                sign_ups: false,
+                direct_message: true,
+                secret_key: None,
+                processor: Processor::LNBits,
+            },
+            verified_users: VerifiedUsers {
+                mode: VerifiedUsersMode::Disabled,
+                domain_whitelist: None,
+                domain_blacklist: None,
+                verify_expiration: Some("1 week".to_owned()),
+                verify_update_frequency: Some("1 day".to_owned()),
+                verify_expiration_duration: None,
+                verify_update_frequency_duration: None,
+                max_consecutive_failures: 20,
+            },
+            retention: Retention {
+                max_events: None,
+                max_bytes: None,
+                persist_days: None,
+                whitelist_addresses: None,
+            },
+            options: Options {
+                reject_future_seconds: None,
+            },
+            logging: Logging {
+                folder_path: None,
+                file_prefix: None,
+            },
+            contract_settings,
         }
     }
 
@@ -351,6 +472,7 @@ impl Default for Settings {
                 folder_path: None,
                 file_prefix: None,
             },
+            contract_settings: ContractSettings::default(),
         }
     }
 }
