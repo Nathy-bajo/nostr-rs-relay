@@ -84,21 +84,27 @@ async fn handle_web_request(
     favicon: Option<Vec<u8>>,
     registry: Registry,
     metrics: NostrMetrics,
+    client_conn: ClientConn,
 ) -> Result<Response<Body>, Infallible> {
-
-    let pubkey = get_pubkey(&request);
-
-    let pubkey = pubkey.unwrap();
-
-    println!("Client Pubkey!!!: {:?}", pubkey);
-
+    // Access auth_pubkey from the client_conn instance
+    let auth_pubkey = match client_conn.auth_pubkey() {
+        Some(auth_pubkey) => auth_pubkey,
+        None => {
+            warn!("Client not authenticated");
+            // Handle the case of unauthenticated client, you may return an error response or take appropriate action.
+            let mut res = Response::new(Body::from("Unauthorized: Authentication required."));
+            *res.status_mut() = StatusCode::UNAUTHORIZED;
+            return Ok(res);
+        }
+    };
 
     // Check user subscription status
-    let is_subscribed = match check_user_subscription_status(pubkey, &settings).await {
+    let is_subscribed = match check_user_subscription_status(auth_pubkey, &settings).await {
         Ok(subscribed) => subscribed,
         Err(_) => {
-            let mut res =
-                Response::new(Body::from("Internal Server Error: Unable to check subscription status."));
+            let mut res = Response::new(Body::from(
+                "Internal Server Error: Unable to check subscription status.",
+            ));
             *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
             return Ok(res);
         }
@@ -110,6 +116,7 @@ async fn handle_web_request(
         *res.status_mut() = StatusCode::FORBIDDEN;
         return Ok(res);
     }
+
     match (
         request.uri().path(),
         request.headers().contains_key(header::UPGRADE),
@@ -161,6 +168,7 @@ async fn handle_web_request(
                                     user_agent,
                                     origin,
                                 };
+
                                 // spawn a nostr server with our websocket
                                 tokio::spawn(nostr_server(
                                     repo,
@@ -663,7 +671,7 @@ async fn handle_web_request(
 
 fn hash_user_post(user_post: &str) -> Vec<u8> {
     let mut hasher = Sha3::v256();
-    let mut output = [0u8; 32]; 
+    let mut output = [0u8; 32];
 
     hasher.update(user_post.as_bytes());
     hasher.finalize(&mut output);
@@ -855,10 +863,9 @@ pub enum MyError {
 }
 
 pub async fn check_user_subscription_status(
-    client_key: String,
+    client_key: &String,
     settings: &Settings,
 ) -> Result<bool, MyError> {
-
     let url = "wss://shibuya-rpc.dwellir.com";
     let conn = aleph_client::Connection::new(url).await;
 
@@ -1112,7 +1119,6 @@ pub fn start_server(settings: &Settings, shutdown_rx: MpscReceiver<()>) -> Resul
             async move {
                 // service_fn converts our function into a `Service`
                 Ok::<_, Infallible>(service_fn(move |request: Request<Body>| {
-
                     let nostr_pubkey = get_pubkey(&request);
                     // Print the Nostr pubkey to the console
                     if let Some(pubkey) = &nostr_pubkey {
@@ -1145,7 +1151,6 @@ pub fn start_server(settings: &Settings, shutdown_rx: MpscReceiver<()>) -> Resul
                         println!("Headersss - {}: {:?}", name, value);
                     }
 
-                    
                     handle_web_request(
                         request,
                         repo.clone(),
@@ -1158,11 +1163,12 @@ pub fn start_server(settings: &Settings, shutdown_rx: MpscReceiver<()>) -> Resul
                         favicon.clone(),
                         registry.clone(),
                         metrics.clone(),
+                        client_conn,
                     )
                 }))
             }
         });
-        
+
         let server = Server::bind(&socket_addr)
             .serve(make_svc)
             .with_graceful_shutdown(ctrl_c_or_signal(webserver_shutdown_listen));
